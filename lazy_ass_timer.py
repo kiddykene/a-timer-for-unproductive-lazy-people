@@ -12,7 +12,7 @@ from pygame import mixer
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QLCDNumber, QPushButton,
                            QVBoxLayout, QHBoxLayout, QWidget, QLabel,
                            QInputDialog, QSpinBox, QDialog, QFormLayout,
-                           QDialogButtonBox, QFileDialog, QLineEdit, QColorDialog)
+                           QDialogButtonBox, QFileDialog, QLineEdit, QColorDialog, QCheckBox)
 from PyQt5.QtCore import QTimer, Qt, pyqtSignal, QObject
 from PyQt5.QtGui import QFont, QColor, QPalette
 
@@ -26,11 +26,11 @@ def get_focused_window_info():
 
 
 class SoundPlayer:
-    def __init__(self):
-        mixer.init()
     
-    def play_sound(self, sound_path):
+    def play_sound(self, sound_path, enable_sounds=True):
         try:
+            if not enable_sounds:
+                return
             kenenet.play_audio.play(sound_path,speed=(0.9,1.15))
             
         except Exception as e:
@@ -144,6 +144,12 @@ class SettingsDialog(QDialog):
         self.timer_hours.setValue(self.settings['default_timer_seconds'] // 3600)
         layout.addRow("Default Time (hours):", self.timer_hours)
         
+        # Add minutes setting
+        self.timer_mins = QSpinBox()
+        self.timer_mins.setRange(0, 59)  # Minutes should be 0-59
+        self.timer_mins.setValue((self.settings['default_timer_seconds'] % 3600) // 60)  # Get remaining minutes
+        layout.addRow("Default Time (minutes):", self.timer_mins)
+        
         # Enter shortcut seconds
         self.shortcut_seconds = QSpinBox()
         self.shortcut_seconds.setRange(1, 300)
@@ -174,6 +180,10 @@ class SettingsDialog(QDialog):
         layout.addRow(QLabel("Sound Settings:"))
         
         # Enter key sound
+        self.enable_sounds = QCheckBox("Enable Sound Effects")
+        self.enable_sounds.setChecked(self.settings.get('enable_sounds', True))  # Default to enabled
+        layout.addRow("", self.enable_sounds)  # Add to layout before the sound settings
+        
         self.enter_sound_path = QLabel(self.settings['enter_sound_path'])
         enter_sound_button = QPushButton("Browse...")
         enter_sound_button.clicked.connect(self.browse_enter_sound)
@@ -232,10 +242,11 @@ class SettingsDialog(QDialog):
     def get_settings(self):
         return {
             'target_process_name': self.process_name.text(),
-            'default_timer_seconds': self.timer_hours.value() * 3600,
+            'default_timer_seconds': (self.timer_hours.value() * 3600) + (self.timer_mins.value() * 60),
             'enter_shortcut_seconds': self.shortcut_seconds.value(),
             'idle_timeout_seconds': self.idle_minutes.value() * 60,
             'display_color': self.color_button.color.name(),
+            'enable_sounds': self.enable_sounds.isChecked(),
             'enter_sound_path': self.enter_sound_path.text(),
             'idle_sound_path': self.idle_sound_path.text(),
             'time_up_sound_path': self.time_up_sound_path.text()
@@ -252,6 +263,7 @@ class TimerWindow(QMainWindow):
             'default_timer_seconds': 3 * 60 * 60,  # 3 hours
             'enter_shortcut_seconds': 20,  # 20 seconds
             'idle_timeout_seconds': 3 * 60,  # 3 minutes
+            'enable_sounds': True,
             'display_color': '#0078d7',  # Default blue color
             'enter_sound_path': r"assets\pop noise.mp3",
             'idle_sound_path': r"assets\id rather be fat and ugly.mp3",
@@ -281,6 +293,7 @@ class TimerWindow(QMainWindow):
         self.focus_timer.start(1000)  # Check every second
         
         # Idle checker
+        self.idle_timer_reset = 0
         self.idle_timer = QTimer(self)
         self.idle_timer.timeout.connect(self.check_idle)
         self.idle_timer.start(5000)  # Check every 5 seconds
@@ -472,6 +485,7 @@ class TimerWindow(QMainWindow):
                 self.timer_running = False
                 self.start_pause_button.setText("Start")
                 self.status_label.setText("Time's up!")
+                self.toggle_timer()
                 self.sound_player.play_sound(self.settings['time_up_sound_path'])
     
     def check_target_focus(self):
@@ -480,32 +494,48 @@ class TimerWindow(QMainWindow):
         # Check if target process is the focused window
         self.is_target_focused = process_name == self.settings['target_process_name']
         
+        # Calculate percentage complete
+        total_time = self.settings['default_timer_seconds']
+        time_elapsed = total_time - self.time_left
+        percentage_complete = (time_elapsed / total_time) * 100 if total_time > 0 else 0
+        
         if self.timer_running:
             if self.is_target_focused:
-                self.status_label.setText(f"Timing {self.settings['target_process_name']} usage")
+                self.status_label.setText(f"Timing {self.settings['target_process_name']} usage, {percentage_complete:.1f}% complete")
             else:
-                self.status_label.setText(f"{self.settings['target_process_name']} not in focus - Timer paused")
+                self.status_label.setText(f"{self.settings['target_process_name']} not focused - Timer paused, {percentage_complete:.1f}% complete")
     
     def check_idle(self):
         idle_time = self.keyboard_monitor.get_idle_time()
-        if idle_time > self.settings['idle_timeout_seconds']:
+        process_name = get_focused_window_info()
+        if idle_time > self.settings['idle_timeout_seconds'] and self.idle_timer_reset < time.time() and process_name != self.settings['target_process_name']:
             # Play idle sound regardless of timer state or target process focus
-            self.sound_player.play_sound(self.settings['idle_sound_path'])
-            
+            self.sound_player.play_sound(
+                self.settings['idle_sound_path'],
+                self.settings.get('enable_sounds', True)  # Default to enabled if setting doesn't exist
+            )
+            self.idle_timer_reset = time.time() + 600
             # If timer is running, auto-pause it
             if self.timer_running:
                 self.toggle_timer()  # Auto-pause
                 self.status_label.setText(f"Auto-paused after {self.settings['idle_timeout_seconds'] // 60} minutes of inactivity")
+        else:
+            if not self.timer_running:
+                self.toggle_timer()  # Auto-pause
+                self.status_label.setText(f"Auto-paused after {self.settings['idle_timeout_seconds'] // 60} minutes of inactivity")
     
     def on_enter_pressed(self):
-        if self.timer_running:
+        process_name = get_focused_window_info()
+        if process_name == self.settings['target_process_name'] and self.timer_running:
             self.time_left = max(0, self.time_left - self.settings['enter_shortcut_seconds'])
             self.update_display()
             self.status_label.setText(f"Subtracted {self.settings['enter_shortcut_seconds']} seconds")
             
-            # Play enter sound if target process is focused
-            if self.is_target_focused:
-                self.sound_player.play_sound(self.settings['enter_sound_path'])
+            # Play enter sound if PyCharm is focused and sounds are enabled
+            self.sound_player.play_sound(
+                self.settings['enter_sound_path'],
+                self.settings.get('enable_sounds', True)  # Default to enabled if setting doesn't exist
+            )
             
             # Reset temporary message after 2 seconds
             QTimer.singleShot(2000, self.restore_status_message)
