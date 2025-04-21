@@ -266,8 +266,8 @@ class TimerWindow(QMainWindow):
             'enable_sounds': True,
             'display_color': '#0078d7',  # Default blue color
             'enter_sound_path': r"assets\pop noise.mp3",
-            'idle_sound_path': r"assets\id rather be fat and ugly.mp3",
-            'time_up_sound_path': r"assets\yt5s.com - FNAF - 6 AM sound (128 kbps).mp3"
+            'idle_sound_path': r"assets\keh noise.mp3",
+            'time_up_sound_path': r"assets\fnaf.mp3"
         }
         
         # Load settings from file
